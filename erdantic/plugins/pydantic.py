@@ -28,7 +28,9 @@ def is_pydantic_model(obj: Any) -> TypeGuard[PydanticModel]:
     Returns:
         bool: True if the object is a Pydantic model, False otherwise.
     """
-    return isinstance(obj, type) and issubclass(obj, pydantic.BaseModel)
+    return (
+        isinstance(obj, type) and issubclass(obj, pydantic.BaseModel) and obj != pydantic.BaseModel
+    )
 
 
 def get_fields_from_pydantic_model(model: PydanticModel) -> List[FieldInfo]:
@@ -66,8 +68,19 @@ def get_fields_from_pydantic_model(model: PydanticModel) -> List[FieldInfo]:
     ]
 
 
+def get_parent_classname_pydantic(model: PydanticModel) -> type:
+    """Get the parent class name for a given PydanticModel model."""
+    if issubclass(model, pydantic.BaseModel):
+        return pydantic.BaseModel
+
+    raise NotImplementedError()
+
+
 register_plugin(
-    key="pydantic", predicate_fn=is_pydantic_model, get_fields_fn=get_fields_from_pydantic_model
+    key="pydantic",
+    predicate_fn=is_pydantic_model,
+    get_fields_fn=get_fields_from_pydantic_model,
+    get_parent_class_name_fn=get_parent_classname_pydantic,
 )
 
 ## Pydantic v1 legacy
@@ -85,7 +98,11 @@ def is_pydantic_v1_model(obj) -> TypeGuard[PydanticV1Model]:
     Returns:
         bool: True if the object is a Pydantic V1 model, False otherwise.
     """
-    return isinstance(obj, type) and issubclass(obj, pydantic.v1.BaseModel)
+    return (
+        isinstance(obj, type)
+        and issubclass(obj, pydantic.v1.BaseModel)
+        and obj != pydantic.v1.BaseModel
+    )
 
 
 def get_fields_from_pydantic_v1_model(model: PydanticV1Model) -> List[FieldInfo]:
@@ -135,8 +152,17 @@ def get_type_annotation_from_pydantic_v1_field(field_info: pydantic.v1.fields.Mo
     return tp
 
 
+def get_parent_classname_pydantic_v1(model: PydanticV1Model) -> type:
+    """Get the parent class name for a given PydanticV1Model model."""
+    if issubclass(model, pydantic.v1.BaseModel):
+        return pydantic.v1.BaseModel
+
+    raise NotImplementedError()
+
+
 register_plugin(
     key="pydantic_v1",
     predicate_fn=is_pydantic_v1_model,
     get_fields_fn=get_fields_from_pydantic_v1_model,
+    get_parent_class_name_fn=get_parent_classname_pydantic_v1,
 )

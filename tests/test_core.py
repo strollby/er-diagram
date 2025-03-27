@@ -246,7 +246,7 @@ def test_unsupported_forward_ref_resolution(monkeypatch):
         dataclasses_predicate_fn,
         get_fields_from_dataclass_no_get_type_hints,
     )
-    monkeypatch.setitem(erdantic.plugins._dict, "dataclasses", patch)
+    monkeypatch.setitem(erdantic.plugins._registry, "dataclasses", patch)
 
     # Test bare string forward reference
     @dataclasses.dataclass
@@ -425,9 +425,9 @@ def test_edge_subclass():
 @pytest.fixture
 def reset_plugins():
     """Reset plugins to original state after we test overwriting pydantic plugin."""
-    plugins_data = tuple(erdantic.plugins._dict.items())
+    plugins_data = tuple(erdantic.plugins._registry.items())
     yield
-    erdantic.plugins._dict = dict(plugins_data)
+    erdantic.plugins._registry = dict(plugins_data)
 
 
 def test_subclass(caplog, outputs_dir, version_patch, reset_plugins):

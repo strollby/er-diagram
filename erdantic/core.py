@@ -24,14 +24,18 @@ from erdantic._repr_utils import (
     sorteddict_repr_pretty,
     sorteddict_rich_repr,
 )
-from erdantic._version import __version__
 from erdantic.exceptions import (
     FieldNotFoundError,
     UnevaluatedForwardRefError,
     UnknownModelTypeError,
     _UnevaluatedForwardRefError,
 )
-from erdantic.plugins import identify_field_extractor_fn, list_plugins
+from erdantic.plugins import (
+    identify_field_extractor_fn,
+    identify_model_color_extractor_fn,
+    identify_parent_class_name_extractor_fn,
+    list_plugins,
+)
 from erdantic.typing_utils import (
     get_recursive_args,
     is_collection_type_of,
@@ -117,12 +121,24 @@ class FieldInfo(pydantic.BaseModel):
         protected_namespaces=(),
     )
 
-    _dot_row_template = """<tr><td>{name}</td><td port="{name}">{type_name}</td></tr>"""
+    _dot_row_template = textwrap.dedent("""
+                        <tr>
+                            <td align="LEFT">{name}</td>
+                            <td align="LEFT" port="{name}">{type_name}</td>
+                        </tr>
+                        """)
 
     _raw_type: Optional[type] = pydantic.PrivateAttr(None)
+    _type_formatted: Optional[str] = pydantic.PrivateAttr(None)
 
     @classmethod
-    def from_raw_type(cls, model_full_name: FullyQualifiedName, name: str, raw_type: type) -> Self:
+    def from_raw_type(
+        cls,
+        model_full_name: FullyQualifiedName,
+        name: str,
+        raw_type: type,
+        type_formatted: Optional[str] = None,
+    ) -> Self:
         """Constructor method to create a new instance from a raw type annotation.
 
         Args:
@@ -130,6 +146,7 @@ class FieldInfo(pydantic.BaseModel):
                 the field belongs to.
             name (str): Name of field.
             raw_type (type): Type annotation.
+            type_formatted (Optional[str]): Formatted type annotation string
 
         Returns:
             Self: _description_
@@ -141,6 +158,7 @@ class FieldInfo(pydantic.BaseModel):
             type_name=type_name,
         )
         field_info._raw_type = raw_type
+        field_info._type_formatted = type_formatted if type_formatted else None
         return field_info
 
     @property
@@ -192,7 +210,9 @@ class FieldInfo(pydantic.BaseModel):
         Returns:
             str: DOT language for table row
         """
-        return self._dot_row_template.format(name=self.name, type_name=self.type_name)
+        return self._dot_row_template.format(
+            name=self.name, type_name=self._type_formatted or self.type_name
+        )
 
 
 @add_repr_pretty_to_pydantic
@@ -209,8 +229,13 @@ class ModelInfo(pydantic.BaseModel, Generic[_ModelType]):
 
     full_name: FullyQualifiedName
     name: str
+    class_name: str
+
     fields: Dict[str, FieldInfo]
     description: str = ""
+
+    header_bg_color: str = "black"
+    header_font_color: str = "white"
 
     model_config = pydantic.ConfigDict(
         extra="forbid",
@@ -218,8 +243,18 @@ class ModelInfo(pydantic.BaseModel, Generic[_ModelType]):
 
     _dot_table_template = textwrap.dedent(
         """\
-        <<table border="0" cellborder="1" cellspacing="0">
-        <tr><td port="_root" colspan="{num_cols}"><b>{name}</b></td></tr>
+        <<table cellpadding="5" border="0" cellborder="1" cellspacing="1">
+        <tr>
+            <td port="_root" bgcolor="{header_bg_color}" colspan="{num_cols}">
+                <font color="{header_font_color}">
+                    <b>{name}</b>
+                </font>
+                <br/>
+                <font color="{header_font_color}">
+                    <i>({class_name})</i>
+                </font>
+            </td>
+        </tr>
         {rows}
         </table>>
         """
@@ -241,17 +276,31 @@ class ModelInfo(pydantic.BaseModel, Generic[_ModelType]):
         if not get_fields_fn:
             raise UnknownModelTypeError(model=raw_model, available_plugins=list_plugins())
 
+        get_class_name_fn = identify_parent_class_name_extractor_fn(raw_model)
+        parent_class_name = (
+            get_class_name_fn(raw_model) if get_class_name_fn else raw_model.__class__
+        )
+
+        get_color_fn = identify_model_color_extractor_fn(raw_model)
+        model_color = get_color_fn(raw_model) if get_color_fn else None
+
         full_name = FullyQualifiedName.from_object(raw_model)
         description = str(full_name)
         docstring = inspect.getdoc(raw_model)
         if docstring:
             description += "\n\n" + docstring + "\n"
 
+        additional_init_args = {}
+        if model_color:
+            additional_init_args["header_bg_color"] = model_color
+
         model_info = cls(
             full_name=full_name,
             name=raw_model.__name__,
+            class_name=parent_class_name.__name__,
             fields={field_info.name: field_info for field_info in get_fields_fn(raw_model)},
             description=description,
+            **additional_init_args,
         )
         model_info._raw_model = raw_model
         return model_info
@@ -295,7 +344,12 @@ class ModelInfo(pydantic.BaseModel, Generic[_ModelType]):
         # Concatenate DOT of all rows together
         rows = "\n".join(field_info.to_dot_row() for field_info in self.fields.values()) + "\n"
         return self._dot_table_template.format(
-            name=self.name, num_cols=num_cols, rows=rows
+            name=self.name,
+            class_name=self.class_name,
+            num_cols=num_cols,
+            rows=rows,
+            header_bg_color=self.header_bg_color,
+            header_font_color=self.header_font_color,
         ).replace("\n", "")
 
 
@@ -308,6 +362,8 @@ class Cardinality(Enum):
     ONE = "one"
     MANY = "many"
 
+    INHERITANCE = "inheritance"
+
     def to_dot(self) -> str:
         """Returns the DOT language specification for the arrowhead styling associated with the
         cardinality value.
@@ -319,6 +375,7 @@ _CARDINALITY_DOT_MAPPING = {
     Cardinality.UNSPECIFIED: "none",
     Cardinality.ONE: "nonetee",
     Cardinality.MANY: "crow",
+    Cardinality.INHERITANCE: "onormal",
 }
 
 
@@ -369,6 +426,7 @@ class Edge(pydantic.BaseModel):
         source_modality (Optional[Modality]): Modality of the source model in the relationship.
             This will never be set for Edges created by erdantic, but you can set it manually to
             notate an externally known modality.
+        color (Optional[Color]): Color of the relationship between two data model classes.
     """
 
     source_model_full_name: FullyQualifiedName
@@ -378,6 +436,8 @@ class Edge(pydantic.BaseModel):
     target_modality: Modality
     source_cardinality: Cardinality = Cardinality.UNSPECIFIED
     source_modality: Modality = Modality.UNSPECIFIED
+    color: Optional[str] = None
+    style: Optional[str] = None
 
     @property
     def key(self) -> str:
@@ -414,12 +474,44 @@ class Edge(pydantic.BaseModel):
             modality = Modality.ZERO
         else:
             modality = Modality.UNSPECIFIED if is_collection else Modality.ONE
+
+        get_color_fn = identify_model_color_extractor_fn(target_model)
+        model_color = get_color_fn(target_model) if get_color_fn else None
+
         return cls(
             source_model_full_name=source_field_info.model_full_name,
             source_field_name=source_field_info.name,
             target_model_full_name=FullyQualifiedName.from_object(target_model),
             target_cardinality=cardinality,
             target_modality=modality,
+            color=model_color,
+        )
+
+    @classmethod
+    def from_model_info(cls, target_model: type, source_model: ModelInfo) -> Self:
+        """
+        Constructor method to create an edge of type inheritance
+        from source_model to target_model
+
+        Args:
+            target_model (type): Target model class.
+            source_model (ModelInfo): ModelInfo of source model class
+
+        Returns:
+            Self: New instance of Edge.
+        """
+
+        get_color_fn = identify_model_color_extractor_fn(target_model)
+        model_color = get_color_fn(target_model) if get_color_fn else None
+
+        return cls(
+            source_model_full_name=source_model.full_name,
+            source_field_name="_root",
+            target_model_full_name=FullyQualifiedName.from_object(target_model),
+            target_cardinality=Cardinality.INHERITANCE,
+            target_modality=Modality.UNSPECIFIED,
+            color=model_color,
+            style="dashed",
         )
 
     def target_dot_arrow_shape(self) -> str:
@@ -451,7 +543,6 @@ DEFAULT_GRAPH_ATTR = (
     ("nodesep", "0.5"),
     ("ranksep", "1.5"),
     ("rankdir", "LR"),
-    ("label", f"Created by erdantic v{__version__} <https://github.com/drivendataorg/erdantic>"),
     ("fontname", "Times New Roman,Times,Liberation Serif,serif"),
     ("fontsize", "9"),
     ("fontcolor", "gray66"),
@@ -549,6 +640,22 @@ class EntityRelationshipDiagram(pydantic.BaseModel):
                                 field_name=field_info.name,
                                 forward_ref=e.forward_ref,
                             )
+
+                    logger.debug("Searching for parent classes of %s", key)
+                    possible_parent = next(
+                        _cls for _cls in model_info.raw_model.mro() if _cls != model_info.raw_model
+                    )
+                    if possible_parent:
+                        is_model = self._add_if_model(possible_parent, recurse=recurse)
+                        if is_model:
+                            edge = self._edge_cls.from_model_info(possible_parent, model_info)
+                            self.edges[edge.key] = edge
+                            logger.debug(
+                                "Added inheritance edge from model '%s' to parent '%s' '%s'.",
+                                edge.source_model_full_name,
+                                edge.target_model_full_name,
+                            )
+
             except UnknownModelTypeError:
                 return False
         else:
@@ -577,6 +684,7 @@ class EntityRelationshipDiagram(pydantic.BaseModel):
     def draw(
         self,
         out: Union[str, os.PathLike],
+        only_models: list[type] = None,
         graph_attr: Optional[Mapping[str, Any]] = None,
         node_attr: Optional[Mapping[str, Any]] = None,
         edge_attr: Optional[Mapping[str, Any]] = None,
@@ -594,6 +702,7 @@ class EntityRelationshipDiagram(pydantic.BaseModel):
                 nodes on the `pygraphviz.AGraph` instance. Defaults to None.
             edge_attr (Mapping[str, Any] | None, optional): Override any edge attributes for all
                 edges on the `pygraphviz.AGraph` instance. Defaults to None.
+            only_models (list[str] | None, optional): Only render the given models
             **kwargs: Additional keyword arguments to
                 [`pygraphviz.AGraph.draw`][pygraphviz.AGraph.draw].
         """
@@ -602,10 +711,12 @@ class EntityRelationshipDiagram(pydantic.BaseModel):
             graph_attr=graph_attr,
             node_attr=node_attr,
             edge_attr=edge_attr,
+            only_models=only_models,
         ).draw(out, prog="dot", **kwargs)
 
     def to_graphviz(
         self,
+        only_models: list[type] = None,
         graph_attr: Optional[Mapping[str, Any]] = None,
         node_attr: Optional[Mapping[str, Any]] = None,
         edge_attr: Optional[Mapping[str, Any]] = None,
@@ -619,6 +730,7 @@ class EntityRelationshipDiagram(pydantic.BaseModel):
                 nodes on the `pygraphviz.AGraph` instance. Defaults to None.
             edge_attr (Mapping[str, Any] | None, optional): Override any edge attributes for all
                 edges on the `pygraphviz.AGraph` instance. Defaults to None.
+            only_models (list[str] | None, optional): Only render the given models
 
         Returns:
             pygraphviz.AGraph: graph object for diagram
@@ -634,21 +746,43 @@ class EntityRelationshipDiagram(pydantic.BaseModel):
         g.node_attr.update(node_attr or {})
         g.edge_attr.update(DEFAULT_EDGE_ATTR)
         g.edge_attr.update(edge_attr or {})
+
+        only_models: set[str] = {
+            str(FullyQualifiedName.from_object(_model)) for _model in (only_models or [])
+        }
+
         for full_name, model_info in self.models.items():
+            if only_models and full_name not in only_models:
+                continue
             g.add_node(
                 full_name,
                 label=model_info.to_dot_label(),
-                tooltip=model_info.description.replace("\n", "&#xA;"),
+                # tooltip=model_info.description.replace("\n", "&#xA;"),
             )
+
         for edge in self.edges.values():
+            if only_models and (
+                str(edge.source_model_full_name) not in only_models
+                or str(edge.target_model_full_name) not in only_models
+            ):
+                continue
+
+            optional_args = {}
+            if edge.color:
+                optional_args["color"] = edge.color
+            if edge.style:
+                optional_args["style"] = edge.style
+
             g.add_edge(
                 edge.source_model_full_name,
                 edge.target_model_full_name,
-                tailport=f"{edge.source_field_name}:e",
                 headport="_root:w",
+                tailport=f"{edge.source_field_name}:e",
                 arrowhead=edge.target_dot_arrow_shape(),
                 arrowtail=edge.source_dot_arrow_shape(),
+                **optional_args,
             )
+
         return g
 
     def to_dot(

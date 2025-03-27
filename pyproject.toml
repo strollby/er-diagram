@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "erdantic"
 version = "1.0.5"
-description = "Entity relationship diagrams for Python data model classes like Pydantic."
+description = "Entity relationship diagrams for Python data model classes like Pydantic, Mongoengine."
 readme = "README.md"
 authors = [{ name = "DrivenData", email = "info@drivendata.org" }, { name = "Jay Qi" }]
 license = { text = "MIT License" }
@@ -28,6 +28,7 @@ classifiers = [
 requires-python = ">=3.8"
 dependencies = [
   "pydantic >= 2",
+  "mongoengine >= 0.29",
   "pydantic-core",
   "pygraphviz",
   "sortedcontainers-pydantic",
